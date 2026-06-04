@@ -13,6 +13,74 @@ int process_arglist(int count, char** arglist);
 int prepare(void);
 int finalize(void);
 
+// Identify which case we need to handle
+int case_identify(int count, char** arglist){
+
+	int i;	
+	if(strcmp(arglist[count - 1], "&")){
+		return 1;
+	}
+	if(strcmp(arglist[count - 2], "<")){
+		return 2;
+	}
+	if(strcmp(arglist[count - 2], ">")){
+		return 3;
+	}
+	for(i = 0; i < count; i++){
+		if(strcmp(arglist[i], "|")){
+			return 4;
+		}
+	}
+	return 0;
+}
+
+int prepare(void){
+	/* SIGINT number is 2, SIG_IGN number is 1*/
+	signal(2, 1);
+	return 0;
+}
+
+
+
+int process_arglist(int count, char** arglist){
+
+	int pid = fork();
+	int status;
+	
+	switch(case_identify(count, arglist)){
+		case 1:
+		// &
+		break;
+		case 2:
+		// <
+		break;
+		case 3:
+		// >
+		break;
+		case 4:
+		// |
+		break;
+		default:
+		//No special case
+		if(pid == -1){
+			perror("Failed to execute process");
+			return 0;
+		}
+	
+		if (pid == 0){
+			if(execvp(arglist[0], arglist) == -1){
+				perror("Failed to execute process");
+				exit(1);
+			}
+		}
+		waitpid(pid, &status, 0);
+		return 1;
+	}
+
+
+
+}
+
 int main(void)
 {
 	if (prepare() != 0)
