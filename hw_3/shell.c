@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <signal.h>
+
 
 // arglist - a list of char* arguments (words) provided by the user
 // it contains count+1 items, where the last item (arglist[count]) and *only* the last is NULL
@@ -17,17 +19,19 @@ int finalize(void);
 int case_identify(int count, char** arglist){
 
 	int i;	
-	if(strcmp(arglist[count - 1], "&")){
+	if((strcmp(arglist[count - 1], "&")) == 0){
 		return 1;
 	}
-	if(strcmp(arglist[count - 2], "<")){
-		return 2;
-	}
-	if(strcmp(arglist[count - 2], ">")){
-		return 3;
+	if(count > 1){
+		if((strcmp(arglist[count - 2], "<")) == 0){
+			return 2;
+		}
+		if((strcmp(arglist[count - 2], ">")) == 0){
+			return 3;
+		}
 	}
 	for(i = 0; i < count; i++){
-		if(strcmp(arglist[i], "|")){
+		if((strcmp(arglist[i], "|")) == 0){
 			return 4;
 		}
 	}
@@ -35,8 +39,7 @@ int case_identify(int count, char** arglist){
 }
 
 int prepare(void){
-	/* SIGINT number is 2, SIG_IGN number is 1*/
-	signal(2, 1);
+	signal(SIGINT, SIG_IGN);
 	return 0;
 }
 
@@ -44,13 +47,26 @@ int prepare(void){
 
 int process_arglist(int count, char** arglist){
 
-	int pid = fork();
-	int status;
+	int pid, status;
 	
 	switch(case_identify(count, arglist)){
 		case 1:
 		// &
-		break;
+		pid = fork();
+		// Handle unsuccessful fork
+		if(pid == -1){
+			perror("Failed to launch background process");
+			return 0;
+		}
+		if(pid == 0){
+			arglist[count - 1] = NULL;
+			if(execvp(arglist[0], arglist) == -1){
+				perror("Failed to execute process");
+				exit(1);
+			}
+		}
+		return 1;
+
 		case 2:
 		// <
 		break;
@@ -62,12 +78,15 @@ int process_arglist(int count, char** arglist){
 		break;
 		default:
 		//No special case
+		pid = fork();
 		if(pid == -1){
 			perror("Failed to execute process");
 			return 0;
 		}
 	
 		if (pid == 0){
+			// Changing the signal such that the child will terminate upon SIGINT
+			signal(SIGINT, SIG_DFL);
 			if(execvp(arglist[0], arglist) == -1){
 				perror("Failed to execute process");
 				exit(1);
@@ -76,8 +95,6 @@ int process_arglist(int count, char** arglist){
 		waitpid(pid, &status, 0);
 		return 1;
 	}
-
-
 
 }
 
