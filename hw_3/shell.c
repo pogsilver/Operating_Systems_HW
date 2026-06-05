@@ -31,7 +31,8 @@ int prepare(void){
  * @return int returns 0 on failure and 1 on success
  */
 int execute_default(int count, char** arglist){
-	int pid, status;
+	pid_t pid;
+	int status;
 	pid = fork();
 	if(pid == -1){
 		perror("Failed to execute process");
@@ -61,7 +62,7 @@ int execute_default(int count, char** arglist){
  * @return int returns 0 on failure and 1 on success
  */
 int execute_background(int count, char** arglist){
-	int pid;
+	pid_t pid;
 	pid = fork();
 	// Handle unsuccessful fork
 	if(pid == -1){
@@ -89,7 +90,8 @@ int execute_background(int count, char** arglist){
  * @return int returns 0 on failure and 1 on success
  */
 int execute_input_redirection(int count, char** arglist){
-	int pid, status, fd;
+	int status, fd;
+	pid_t pid;
 	char* file_path;
 
 	pid = fork();
@@ -135,7 +137,8 @@ int execute_input_redirection(int count, char** arglist){
  * @return int returns 0 on failure and 1 on success
  */
 int execute_output_redirection(int count, char** arglist){
-	int pid, status, fd;
+	int status, fd;
+	pid_t pid;
 	char* file_path;
 
 	pid = fork();
@@ -169,7 +172,63 @@ int execute_output_redirection(int count, char** arglist){
 			}
 	}
 	waitpid(pid, &status, 0);
-		return 1;
+	return 1;
+}
+
+/**
+ * @brief helper function to execute_piping. given an array of strings,\
+ * the function modifies the array such that every instance of "|" is changed\
+ * to NULL
+ * 
+ * @param count length of the array
+ * @param arglist the array of strings that is modified
+ */
+void update_piping_array(int count, char** arglist){
+	int i;
+	for(i = 0; i < count; i++){
+		if(strcmp(arglist[i], "|") == 0){
+			arglist[i] = NULL;
+		}
+	}
+}
+
+/**
+ * @brief a function to help find the index of the next child process\
+ * arguments given the last one. Used in execute_piping after adjusting 
+ * the input array
+ * 
+ * @param start index of the last process inputs
+ * @param len length of the inputs array
+ * @param arglist the array of inputs
+ * @return int the index of the next process inputs in the array. returns -1\
+ * if there is no next index
+ */
+int next_execute_index(int start, int len, char** arglist){
+
+	while(start < len - 1){
+		if((arglist[start] == NULL) && (arglist[start + 1] != NULL)){
+			return start + 1;
+		}
+		start++;
+	}
+	return -1;
+}
+/**
+ * @brief a helper function to execute_piping to count how many processes\
+ * we need to run
+ * @param len length of the input array
+ * @param arglist the input array
+ * @return int number of processes we need to run
+ */
+int count_commands(int len, char** arglist){
+	int i, counter;
+	counter = 0;
+	for(i = 0; i < len; i++){
+		if(strcmp(arglist[i], "|") == 0){
+			counter++;
+		}
+	}
+	return counter + 1;
 }
 
 /**
@@ -181,6 +240,69 @@ int execute_output_redirection(int count, char** arglist){
  * @return int returns 0 on failure and 1 on success
  */
 int execute_piping(int count, char** arglist){
+	int num_of_commands, status, curr_exec, i, j;
+	pid_t pid;
+	num_of_commands = count_commands(count, arglist);
+	
+	pid_t pids[num_of_commands];
+	curr_exec = 0;
+	update_piping_array(count, arglist);
+	int pipes_fd[num_of_commands - 1][2];
+
+	for(i = 0; i < num_of_commands - 1; i++){
+		if(pipe(pipes_fd[i]) == -1){
+			perror("Failed to initiate one of the pipes");
+			return 0;
+		}
+	}
+
+	for(i = 0; i < num_of_commands; i++){
+		pid = fork();
+		if(pid == -1){
+			perror("Failed to execute one of the processes in the pipe");
+			return 0;
+		}
+		pids[i] = pid;
+		if(pid == 0){
+			if(i != 0){
+				if(dup2(pipes_fd[i-1][0], STDIN_FILENO) == -1){
+					perror("Failed to use one of the pipes");
+					exit(1);
+				}
+			}
+
+			if(i != num_of_commands - 1){
+				if(dup2(pipes_fd[i][1], STDOUT_FILENO) == -1){
+					perror("Failed to use one of the pipes");
+					exit(1);
+				}
+			}
+
+			for(j = 0; j < num_of_commands - 1; j++){
+				if((close(pipes_fd[j][0]) == -1) || (close(pipes_fd[j][1]) == -1)) {
+					perror("Failed to use one of the pipes");
+						exit(1);
+				}	
+			}
+
+			if(execvp(arglist[curr_exec], arglist) == -1){
+				perror("Failed to execute process");
+				exit(1);
+			}
+		}
+
+		curr_exec = next_execute_index(curr_exec, count, arglist);
+	}
+
+	for(j = 0; j < num_of_commands - 1; j++){
+		if((close(pipes_fd[j][0]) == -1) || (close(pipes_fd[j][1]) == -1)) {
+			perror("Failed to use one of the pipes");
+				return 0;
+		}	
+	}
+	for(j = 0; j < num_of_commands; j++){
+		waitpid(pids[j], &status, 0);
+	}
 	return 1;
 }
 int process_arglist(int count, char** arglist){
