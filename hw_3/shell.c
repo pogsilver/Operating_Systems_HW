@@ -18,8 +18,42 @@ int process_arglist(int count, char** arglist);
 int prepare(void);
 int finalize(void);
 
+
+/**
+ * @brief handles the sigchld signals to reap zombie processes
+ * 
+ * @param signum The signal number. activates only when signum == SIGCHLD
+ */
+void sigchld_handler(int signum){
+	int i;
+	if(signum == SIGCHLD){
+		do{
+			i = waitpid(-1, NULL, WNOHANG);
+		}
+		while( i > 0);
+		if((i == -1) && (errno != ECHILD)){
+			perror("Problem with the signal handler");
+			exit(1);
+		}
+	}
+}
+
+
 int prepare(void){
+	struct sigaction sa;
+	// Handle SIGINT
 	signal(SIGINT, SIG_IGN);
+	// Handle zombies
+	sa.sa_handler = sigchld_handler;
+	sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+	if(sigaction(SIGCHLD, &sa, NULL) != 0){
+		perror("Problem setting up the signal handler");
+		exit(1);
+	}
+	return 0;
+}
+
+int finalize(void){
 	return 0;
 }
 
@@ -40,14 +74,20 @@ int execute_default(int count, char** arglist){
 	}
 
 	if (pid == 0){
-		// Changing the signal such that the child will terminate upon SIGINT
+		// Changing the signal handling such that the child will terminate upon SIGINT
 		signal(SIGINT, SIG_DFL);
 		if(execvp(arglist[0], arglist) == -1){
 			perror("Failed to execute process");
 			exit(1);
 		}
 	}
-	waitpid(pid, &status, 0);
+
+	if(waitpid(pid, &status, 0) == -1){
+		if((errno != ECHILD) && (errno != EINTR)){
+			perror("ECHILD error in one of the processes");
+			return 0;
+		}
+	}
 	return 1;
 }
 
@@ -100,7 +140,7 @@ int execute_input_redirection(int count, char** arglist){
 		return 0;
 	}
 	if(pid == 0){
-		// Changing the signal such that the child will terminate upon SIGINT
+		// Changing the signal handling such that the child will terminate upon SIGINT
 		signal(SIGINT, SIG_DFL);
 
 		// Setting the given file path as the input location
@@ -124,7 +164,12 @@ int execute_input_redirection(int count, char** arglist){
 				exit(1);
 			}
 	}
-	waitpid(pid, &status, 0);
+	if(waitpid(pid, &status, 0) == -1){
+		if((errno != ECHILD) && (errno != EINTR)){
+			perror("ECHILD error in one of the processes");
+			return 0;
+		}
+	}
 		return 1;
 }
 
@@ -147,7 +192,7 @@ int execute_output_redirection(int count, char** arglist){
 		return 0;
 	}
 	if(pid == 0){
-		// Changing the signal such that the child will terminate upon SIGINT
+		// Changing the signal handling such that the child will terminate upon SIGINT
 		signal(SIGINT, SIG_DFL);
 
 		// Setting the given file path as the output location
@@ -171,7 +216,12 @@ int execute_output_redirection(int count, char** arglist){
 				exit(1);
 			}
 	}
-	waitpid(pid, &status, 0);
+	if(waitpid(pid, &status, 0) == -1){
+		if((errno != ECHILD) && (errno != EINTR)){
+			perror("ECHILD error in one of the processes");
+			return 0;
+		}
+	}
 	return 1;
 }
 
@@ -249,6 +299,7 @@ int execute_piping(int count, char** arglist){
 	update_piping_array(count, arglist);
 	int pipes_fd[num_of_commands - 1][2];
 
+	// Setting up the pipes
 	for(i = 0; i < num_of_commands - 1; i++){
 		if(pipe(pipes_fd[i]) == -1){
 			perror("Failed to initiate one of the pipes");
@@ -263,7 +314,12 @@ int execute_piping(int count, char** arglist){
 			return 0;
 		}
 		pids[i] = pid;
+
 		if(pid == 0){
+			// Changing the signal handling such that the child will terminate upon SIGINT
+			signal(SIGINT, SIG_DFL);
+
+			//Mapping the pipes ends
 			if(i != 0){
 				if(dup2(pipes_fd[i-1][0], STDIN_FILENO) == -1){
 					perror("Failed to use one of the pipes");
@@ -294,33 +350,40 @@ int execute_piping(int count, char** arglist){
 		curr_exec = next_execute_index(curr_exec, count, arglist);
 	}
 
+	// Handling the parent proccess
 	for(j = 0; j < num_of_commands - 1; j++){
 		if((close(pipes_fd[j][0]) == -1) || (close(pipes_fd[j][1]) == -1)) {
 			perror("Failed to use one of the pipes");
 				return 0;
 		}	
 	}
+
 	for(j = 0; j < num_of_commands; j++){
-		waitpid(pids[j], &status, 0);
+		if(waitpid(pids[j], &status, 0) == -1){
+			if((errno != ECHILD) && (errno != EINTR)){
+				perror("ECHILD error in one of the processes");
+				return 0;
+			}
+		}
 	}
 	return 1;
 }
 int process_arglist(int count, char** arglist){
 
 	int i;
-	if((strcmp(arglist[count - 1], "&")) == 0){
+	if(strcmp(arglist[count - 1], "&") == 0){
 		return execute_background(count, arglist);
 	}
 	if(count > 1){
-		if((strcmp(arglist[count - 2], "<")) == 0){
+		if(strcmp(arglist[count - 2], "<") == 0){
 			return execute_input_redirection(count, arglist);		
 		}
-		if((strcmp(arglist[count - 2], ">")) == 0){
+		if(strcmp(arglist[count - 2], ">") == 0){
 			return execute_output_redirection(count, arglist);
 		}
 	}
 	for(i = 0; i < count; i++){
-		if((strcmp(arglist[i], "|")) == 0){
+		if(strcmp(arglist[i], "|") == 0){
 			return execute_piping(count, arglist);
 		}
 	}
