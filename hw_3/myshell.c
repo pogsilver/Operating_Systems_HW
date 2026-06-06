@@ -27,6 +27,7 @@ int finalize(void);
 void sigchld_handler(int signum){
 	int i;
 	if(signum == SIGCHLD){
+		// Reap all zombie processes
 		do{
 			i = waitpid(-1, NULL, WNOHANG);
 		}
@@ -336,14 +337,14 @@ int execute_piping(int count, char** arglist){
 					exit(1);
 				}
 			}
-
+			// Closing the pipe ends by each child
 			for(j = 0; j < num_of_commands - 1; j++){
 				if((close(pipes_fd[j][0]) == -1) || (close(pipes_fd[j][1]) == -1)) {
 					perror("Failed to use one of the pipes");
 						exit(1);
 				}	
 			}
-
+			// executing such that each child has its correct program name and argument array 
 			if(execvp(arglist[curr_exec], &arglist[curr_exec]) == -1){
 				perror("Failed to execute process");
 				exit(1);
@@ -354,13 +355,15 @@ int execute_piping(int count, char** arglist){
 	}
 
 	// Handling the parent proccess
+
+	// Closing the pipe ends by the parent
 	for(j = 0; j < num_of_commands - 1; j++){
 		if((close(pipes_fd[j][0]) == -1) || (close(pipes_fd[j][1]) == -1)) {
 			perror("Failed to use one of the pipes");
 				return 0;
 		}	
 	}
-
+	// Waiting for all children to complete
 	for(j = 0; j < num_of_commands; j++){
 		if(waitpid(pids[j], &status, 0) == -1){
 			if((errno != ECHILD) && (errno != EINTR)){
