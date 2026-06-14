@@ -9,7 +9,6 @@
 #include <linux/slab.h>
 #include "message_slot.h"
 
-#define MAX_MSG_LENGTH 128
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("YC");
