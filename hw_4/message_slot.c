@@ -279,12 +279,8 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             return 0;
 
         case MSG_SLOT_SET_CEN:
-        if (fd_data->channel_id != 0){
             fd_data->censorship_enabled = (int)arg;
-            return 0;
-        }
-        return -EINVAL;
-            
+            return 0; 
         default:
           return -EINVAL;
     }
