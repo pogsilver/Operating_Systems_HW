@@ -7,6 +7,7 @@
 #include <linux/uaccess.h>   // get_user, put_user
 #include <linux/string.h>    // memset
 #include <linux/slab.h>
+#include "message_slot.h"
 
 #define MAX_MSG_LENGTH 128
 
@@ -45,63 +46,6 @@ typedef struct slot_node {
 
 
 static slot_node* slots = NULL;
-
-
-/**
- * @brief Creates a node_slot object with the given minor number
- * 
- * @param minor 
- * @return slot_node* node with the given minor number. returns NULL if it failed\
- * to create one
- */
-static slot_node* create_slot(int minor){
-
-    slot_node* node;
-
-    node = kmalloc(sizeof(slot_node), GFP_KERNEL);
-    if(node == NULL){
-        return NULL;
-    }
-    node->minor_number = minor;
-    node->channels = NULL;
-    node->next = NULL;
-    return node;
-}
-
-
-/**
- * @brief a function to find the slot_node with the given minor.
- * If the given minor was valid and no slot with it was found,
- * the function creates the correct node and returns it
- * 
- * @param minor the minor number of the wanted slot
- * @return * slot_node node with the given minor number. NULL if the minor is invalid
- */
-static slot_node* find_slot(int minor){
-    
-    slot_node* curr;
-    
-    curr = slots;
-    if((minor < 0) || (255 < minor)){
-        return NULL;
-    }
-    if(slots == NULL){
-        slots = create_slot(minor);
-        return slots;
-    }
-    while(curr != NULL){
-        if (curr->minor_number == minor){
-            return curr;
-        }
-        if (curr->next == NULL){
-            break;
-        }
-        curr = curr->next;
-    }
-    curr->next = create_slot(minor);
-    return curr->next;
-
-}
 
 
 /**
@@ -168,6 +112,108 @@ static channel_node* find_channel(slot_node* slot, int channel, int create){
     return NULL;
 
 }
+
+/**
+ * @brief frees a linked list of channel_nodes
+ * 
+ * @param channel the head of the list we want to free
+ */
+static void free_channel(channel_node* channel){
+
+    channel_node *curr, *next;
+
+    curr = channel;
+    if(curr == NULL){
+        return;
+    }
+    while(curr->next != NULL){
+        next = curr->next;
+        kfree(curr);
+        curr = next;
+    }
+    kfree(curr);
+}
+
+
+/**
+ * @brief Creates a node_slot object with the given minor number
+ * 
+ * @param minor 
+ * @return slot_node* node with the given minor number. returns NULL if it failed\
+ * to create one
+ */
+static slot_node* create_slot(int minor){
+
+    slot_node* node;
+
+    node = kmalloc(sizeof(slot_node), GFP_KERNEL);
+    if(node == NULL){
+        return NULL;
+    }
+    node->minor_number = minor;
+    node->channels = NULL;
+    node->next = NULL;
+    return node;
+}
+
+
+/**
+ * @brief a function to find the slot_node with the given minor.
+ * If the given minor was valid and no slot with it was found,
+ * the function creates the correct node and returns it
+ * 
+ * @param minor the minor number of the wanted slot
+ * @return * slot_node node with the given minor number. NULL if the minor is invalid
+ */
+static slot_node* find_slot(int minor){
+    
+    slot_node* curr;
+    
+    curr = slots;
+    if((minor < 0) || (255 < minor)){
+        return NULL;
+    }
+    if(slots == NULL){
+        slots = create_slot(minor);
+        return slots;
+    }
+    while(curr != NULL){
+        if (curr->minor_number == minor){
+            return curr;
+        }
+        if (curr->next == NULL){
+            break;
+        }
+        curr = curr->next;
+    }
+    curr->next = create_slot(minor);
+    return curr->next;
+
+}
+
+/**
+ * @brief frees the slots linked list
+ * 
+ */
+static void free_slots(){
+
+    slot_node *curr, *next;
+
+    curr = slots;
+    if(curr == NULL){
+        return;
+    }
+    while(curr->next != NULL){
+        next = curr->next;
+        free_channel(curr->channels);
+        kfree(curr);
+        curr = next;
+    }
+    free_channel(curr->channels);
+    kfree(curr);
+}
+
+
 
 static int device_open(struct inode *inode, struct file *file){
 
@@ -336,3 +382,29 @@ static struct file_operations fops = {
 .read = device_read,
 .unlocked_ioctl = device_ioctl, // Add ioctl support
 };
+
+
+static int __init device_init(void)
+{
+    int result;
+    // Register driver capabilities
+    result = register_chrdev(MAJOR_NUM, "message_slot", &fops);
+    
+    if (result < 0) {
+        printk(KERN_ALERT "Registration failed\n");
+        return result;
+    }
+    
+    printk("Registration successful. Major number: %d\n", MAJOR_NUM);
+    return 0;
+}
+
+static void __exit device_cleanup(void)
+{
+    unregister_chrdev(MAJOR_NUM, "message_slot");
+    free_slots();
+    printk("Device unregistered\n");
+}
+
+module_init(device_init);
+module_exit(device_cleanup);
