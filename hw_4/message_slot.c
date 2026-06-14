@@ -1,5 +1,5 @@
-#define __KERNEL__
-#define MODULE
+// #define __KERNEL__
+// #define MODULE
 
 #include <linux/kernel.h>    // Kernel work
 #include <linux/module.h>    // Module support
@@ -194,7 +194,7 @@ static slot_node* find_slot(int minor){
  * @brief frees the slots linked list
  * 
  */
-static void free_slots(){
+static void free_slots(void){
 
     slot_node *curr, *next;
 
@@ -278,6 +278,9 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             return 0;
 
         case MSG_SLOT_SET_CEN:
+            if(((int)arg != 0) && ((int)arg != 1)){
+                return -EINVAL;
+            }
             fd_data->censorship_enabled = (int)arg;
             return 0; 
         default:
