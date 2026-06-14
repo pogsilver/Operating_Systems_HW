@@ -129,14 +129,15 @@ static channel_node* create_channel(int channel_number){
 
 /**
  * @brief a function to find the channel_node with the given channel in
- * the given slot if the channel number is valid. If it wasn't found it creates
- * it and returns it.
+ * the given slot if the channel number is valid. If it wasn't found it and the create
+ * creates flag is on creates it and returns it.
  * @param slot the slot in which we search the given channel
- * @param channel the wanted channel_id  
+ * @param channel the wanted channel_id
+ * @param create a flag to create the channel_node if it is not found
  * @return channel_node* the channel_node in the slot with the given channel_id. NULL 
  * if the given channel is invalid 
  */
-static channel_node* find_channel(slot_node* slot, int channel){
+static channel_node* find_channel(slot_node* slot, int channel, int create){
     
     channel_node* curr;
     
@@ -145,8 +146,11 @@ static channel_node* find_channel(slot_node* slot, int channel){
         return NULL;
     }
     if(curr == NULL){
-        slot->channels = create_channel(channel);
-        return slot->channels;
+        if(create){
+            slot->channels = create_channel(channel);
+            return slot->channels;
+        }
+        return NULL;
     }
     while(curr != NULL){
         if (curr->channel_id == channel){
@@ -157,8 +161,11 @@ static channel_node* find_channel(slot_node* slot, int channel){
         }
         curr = curr->next;
     }
-    curr->next = create_channel(channel);
-    return curr->next;
+    if(create){
+        curr->next = create_channel(channel);
+        return curr->next;
+    }
+    return NULL;
 
 }
 
@@ -218,7 +225,7 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             if((arg == 0) || (1 << 20 < arg)){
                 return -EINVAL;
             }
-            channel = find_channel(slot, arg)
+            channel = find_channel(slot, arg, 1);
             if(channel == NULL){
                 return -ENOMEM;
             }
@@ -237,8 +244,89 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     }
 }
 
+static ssize_t device_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset){
 
+    int bytes_written, bytes_to_write, i, success, minor, censor;
+    file_descriptor_data* fd_data;
+    slot_node* slot;
+    channel_node* channel;
+    char tmp[MAX_MSG_LENGTH];
 
+    memset(tmp, 0, MAX_MSG_LENGTH);
+
+    if((0 == length) || (128 < length)){
+        return -EMSGSIZE;
+    }
+
+    minor = iminor(file->f_inode);
+    slot = find_slot(minor);
+    fd_data = (file_descriptor_data*)file->private_data;
+
+    if(fd_data->channel_id == 0){
+        return -EINVAL;
+    }
+    censor = fd_data->censorship_enabled;
+    channel = find_channel(slot, fd_data->channel_id, 1);
+
+    bytes_to_write = min(length, (size_t) MAX_MSG_LENGTH);
+    
+
+    bytes_written = 0;
+    
+    // Copy to message into a temporary buffer:
+    for(i = 0; i < bytes_to_write; i++){
+        success =  get_user(tmp[i], buffer + i);
+        if(success != 0){
+            return -EFAULT;
+        }
+        if((censor) && (i % 4 == 3)){
+            tmp[i] = '#';
+        }
+        bytes_written++;
+    }
+
+    // Copy from the buffer into the channel:
+    memcpy(channel->message, tmp, bytes_to_write);
+    channel->message_length = bytes_written;
+    return bytes_written;
+}
+
+static ssize_t device_read(struct file *file,  char __user *buffer, size_t length, loff_t *offset){
+
+    int i, success, minor;
+    file_descriptor_data* fd_data;
+    slot_node* slot;
+    channel_node* channel;
+
+    
+
+    minor = iminor(file->f_inode);
+    slot = find_slot(minor);
+    fd_data = (file_descriptor_data*)file->private_data;
+
+    if(fd_data->channel_id == 0){
+        return -EINVAL;
+    }
+    channel = find_channel(slot, fd_data->channel_id, 0);
+    if(channel == NULL){
+        return -EINVAL;
+    }
+    if(channel->message_length == 0){
+        return -EWOULDBLOCK;
+    }
+    if(length < channel->message_length){
+        return -ENOSPC;
+    }
+
+    // Copy to message into a buffer:
+    for(i = 0; i < channel->message_length; i++){
+        success =  put_user(channel->message[i], buffer + i);
+        if(success != 0){
+            return -EFAULT;
+        }
+    }
+    return channel->message_length;
+}
 
 static struct file_operations fops = {
 .owner = THIS_MODULE,
