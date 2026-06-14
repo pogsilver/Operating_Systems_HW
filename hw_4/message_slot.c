@@ -80,12 +80,12 @@ static channel_node* create_channel(int channel_number){
  * @return channel_node* the channel_node in the slot with the given channel_id. NULL 
  * if the given channel is invalid 
  */
-static channel_node* find_channel(slot_node* slot, int channel, int create){
+static channel_node* find_channel(slot_node* slot, unsigned int channel, int create){
     
     channel_node* curr;
     
     curr = slot->channels;
-    if((channel < 0) || (1<<20 < channel)){
+    if(channel < 0){
         return NULL;
     }
     if(curr == NULL){
@@ -267,7 +267,7 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     switch(cmd){
         case MSG_SLOT_CHANNEL:
 
-            if((arg == 0) || (1 << 20 < arg)){
+            if(arg == 0){
                 return -EINVAL;
             }
             channel = find_channel(slot, arg, 1);
@@ -314,6 +314,9 @@ static ssize_t device_write(struct file *file, const char __user *buffer, size_t
 
     bytes_to_write = min(length, (size_t) MAX_MSG_LENGTH);
     
+    if(buffer == NULL){
+        return -EINVAL;
+    }
 
     bytes_written = 0;
     
@@ -362,6 +365,9 @@ static ssize_t device_read(struct file *file,  char __user *buffer, size_t lengt
         return -ENOSPC;
     }
 
+    if(buffer == NULL){
+        return -EINVAL;
+    }
     // Copy to message into a buffer:
     for(i = 0; i < channel->message_length; i++){
         success =  put_user(channel->message[i], buffer + i);

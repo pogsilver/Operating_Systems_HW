@@ -25,7 +25,7 @@ int main(int argc, char* argv[]){
         exit(1);
     }
 
-    fd = open(slot_path, O_RDONLY);
+    fd = open(slot_path, O_RDWR);
     if(fd < 0){
         perror("Failed to open the message slot");
         exit(1);
