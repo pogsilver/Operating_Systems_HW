@@ -11,19 +11,69 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+
 #define PCC_OFFSET 32
 #define LISTEN_QUEUE_SIZE 10
+#define MAX_BUFF_SIZE 1000000
+#define N 4
 
 
+/**
+ * @brief Prints the given array values in the given format:
+ * "char '%c' : %u times\n", (char)c, pcc[i], where is a counter
+ * to the amount of appearances of c
+ * 
+ * @param pcc an array that counts appearances of printable characters
+ */
 void print_pcc_total(uint32_t pcc[]){
     int i, c;
     
     for(i = 0; i < 95; i++){
         c = i + PCC_OFFSET;
         if (pcc[i] > 0){
-        printf("char '%c' : %u times\n", (char)c, pcc[c]);
+        printf("char '%c' : %u times\n", (char)c, pcc[i]);
         }
     }
+}
+
+
+/**
+ * @brief Reads the the given k amount of bytes to the given buffer from
+ * the given socket. 
+ * Returns:
+ *  k on success
+ *  0 in case the connection was closed
+ *  -1 if an error occurred
+ * 
+ * @param sockfd the fd of the socket
+ * @param buf the buffer to read to
+ * @param k amount of bytes to be read
+ * @return ssize_t The amount of bytes read on success
+ *                  0 in case the connection was closed
+ *                  -1 if an error occurred
+ */
+ssize_t read_k_bytes(int sockfd, char *buff, size_t k){
+
+    ssize_t read_bytes, total_read;
+    read_bytes = 0;
+    total_read = 0;
+
+    while(k - total_read > 0){
+        read_bytes = read(sockfd, buff + total_read, k - total_read);
+        if (read_bytes > 0){
+            total_read = total_read + read_bytes;
+        }
+        if (read_bytes == 0){
+            return 0;
+        }
+        if (read_bytes == -1){
+            return -1;
+        }
+    }
+
+    return total_read;
+
 }
 
 
@@ -36,10 +86,17 @@ uint32_t pcc_total[95] = {0};
 
 int main(int argc, char *argv[]){
 
-    int listenfd, er, option_value, connfd;
+    int sockfd, er, option_value, connfd, i, fail_flag;
+    ssize_t read_bytes;
+    char curr_c;
     uint16_t port;
+    uint32_t file_size, data_buffer_size, N_buff;
+
     struct sockaddr_in serv_addr, peer_addr;
     socklen_t addrsize;
+    char *data_buff;
+    uint32_t connection_pcc_total[95];
+
 
     // Input validity check
     if (argc != 2){
@@ -50,14 +107,14 @@ int main(int argc, char *argv[]){
     // Setting up the connection
     port = atoi(argv[1]);
 
-    listenfd = socket(AF_INET, SOCK_STREAM, 0);
-    if(listenfd < 0){
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if(sockfd < 0){
         perror("Failed to initiate socket");
         exit(1);
     }
     option_value = 1;
     // Disabling the TIME_WAIT 
-    er = setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &option_value, sizeof(option_value));
+    er = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &option_value, sizeof(option_value));
     if(er < 0){
         perror("Failed to disable TIME_WAIT");
         exit(1);
@@ -68,32 +125,88 @@ int main(int argc, char *argv[]){
     serv_addr.sin_port = htons(port);
     addrsize = sizeof(struct sockaddr_in);
 
-    er = bind(listenfd, (struct sockaddr *)&serv_addr, addrsize);
+    er = bind(sockfd, (struct sockaddr *)&serv_addr, addrsize);
     if(er < 0){
         perror("Failed to bind socket");
         exit(1);
     }
 
     // Waiting for connection and connecting
-    er = listen(listenfd, LISTEN_QUEUE_SIZE);
+    er = listen(sockfd, LISTEN_QUEUE_SIZE);
     if(er < 0){
         perror("Failed to initiate listening state");
         exit(1);
     }
 
+    // Initializing the data buffer
+    data_buff = malloc(MAX_BUFF_SIZE);
+    if(data_buff == NULL){
+        fprintf(stderr, "Failed to allocate buffer for data transfer\n");
+        exit(1);
+    }
+
     while(1){
-        connfd = accept(listenfd, (struct sockaddr *)&peer_addr, &addrsize);
+        // Resetting current connection pcc counter and fail_flag
+        memset(connection_pcc_total, 0, sizeof(connection_pcc_total));
+        fail_flag = 0;
+
+        // Accepting connection
+        connfd = accept(sockfd, (struct sockaddr *)&peer_addr, &addrsize);
 
         if(connfd < 0){
             perror("Failed to accept connection");
-        exit(1);
+            exit(1);
         }
+
+        // Reding the header to know the file size
+        read_bytes = read_k_bytes(connfd, (char *)&N_buff, sizeof(N_buff));
+        if(read_bytes < 0){
+            // todo: handle this
+            if ((errno != ETIMEDOUT) && (errno != ECONNRESET) && (errno != EPIPE)){
+                fprintf(stderr, strerror(errno));
+
+            }
+        }
+        // Reading the file stream
+        if (read_bytes == N){
+            file_size = ntohl(N_buff);
+            
+            while (file_size> 0){
+                data_buffer_size = MIN(file_size, MAX_BUFF_SIZE);
+                read_bytes = read_k_bytes(connfd, data_buff, data_buffer_size);
+                
+                if(read_bytes <= 0){
+                        if(read_bytes < 0){
+                            // todo: handle this
+                            if ((errno != ETIMEDOUT) && (errno != ECONNRESET) && (errno != EPIPE)){
+                                fprintf(stderr, strerror(errno));
+
+                            }
+                    }
+                    fail_flag = 1;
+                    break;
+                }
+                // Updating current connection pcc total
+                for (i = 0; i < read_bytes; i ++){
+                    curr_c = data_buff[i];
+                    if ((32 <=curr_c) && (curr_c <= 126)){
+                        connection_pcc_total[curr_c - PCC_OFFSET]++;
+                    }
+                }
+                file_size = file_size - read_bytes;
+                }            
+            }
+
+        }
+
+
 
         er = close(connfd);
         if(er < 0){
             perror("Failed to close socket");
             exit(1);
         }
-    }
-    }
+}
+
+    
 
