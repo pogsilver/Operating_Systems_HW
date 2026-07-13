@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <signal.h>
 
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
@@ -20,7 +21,7 @@
 #define N 4
 
 uint32_t pcc_total[NUM_OF_PCC] = {0};
-
+volatile sig_atomic_t got_sigint = 0;
 
 /**
  * @brief Prints the given array values in the given format:
@@ -47,14 +48,14 @@ void print_pcc_total(uint32_t pcc[]){
  * Returns:
  *  k on success
  *  0 in case the connection was closed
- *  -1 if an error occurred
+ *  -1 if an error occurred that is not EINTR occurred
  * 
  * @param sockfd the fd of the socket
  * @param buf the buffer to read to
  * @param k amount of bytes to be read
  * @return ssize_t The amount of bytes read on success
  *                  0 in case the connection was closed
- *                  -1 if an error occurred
+ *                  -1 if an error that is not EINTR occurred
  */
 ssize_t read_k_bytes(int sockfd, char *buff, size_t k){
 
@@ -70,7 +71,7 @@ ssize_t read_k_bytes(int sockfd, char *buff, size_t k){
         if (read_bytes == 0){
             return 0;
         }
-        if (read_bytes == -1){
+        if ((read_bytes == -1) && (errno != EINTR)){
             return -1;
         }
     }
@@ -82,18 +83,18 @@ ssize_t read_k_bytes(int sockfd, char *buff, size_t k){
 
 /**
  * @brief Writes the the given k amount of bytes to the given socket from
- * the given buffer. 
+ * the given buffer, if k > 0. 
  * Returns:
  *  k on success
  *  0 in case the connection was closed
- *  -1 if an error occurred
+ *  -1 if an error occurred that is not EINTR, ETIMEOUT, EPIPE or ECONNRESET
  * 
  * @param sockfd the fd of the socket
  * @param buf the buffer to write to
  * @param k amount of bytes to be written
  * @return ssize_t The amount of bytes written on success
  *                  0 in case the connection was closed
- *                  -1 if an error occurred
+ *                  -1 if an error occurred that is not EINTR, ETIMEOUT, EPIPE or ECONNRESET
  */
 ssize_t write_k_bytes(int sockfd, char *buff, size_t k){
 
@@ -105,7 +106,7 @@ ssize_t write_k_bytes(int sockfd, char *buff, size_t k){
         if (written_bytes > 0){
             total_written = total_written + written_bytes;
         }
-        if (written_bytes == -1){
+        if ((written_bytes < 0) && (errno != EINTR)){
             if ((errno == ETIMEDOUT) || (errno == ECONNRESET) || (errno == EPIPE)){
                 return 0;
             }
@@ -150,32 +151,44 @@ void update_total(uint32_t pcc[]){
     }
 }
 
-
-
+/**
+ * @brief handler in case we got sigint
+ * 
+ * @param signum 
+ */
+void sigint_handler(int signum){
+    got_sigint = 1;
+}
 
 
 
 int main(int argc, char *argv[]){
 
-    int sockfd, er, option_value, connfd, i, fail_flag;
+    int sockfd, er, option_value, connfd, i, failed;
     ssize_t read_bytes, written;
     char curr_c;
     uint16_t port;
-    uint32_t file_size, data_buffer_size, N_buff;
+    uint32_t file_size, data_buffer_size, N_buff, served_clients;
     uint32_t pcc_amount, message;
 
     struct sockaddr_in serv_addr, peer_addr;
     socklen_t addrsize;
     char *data_buff;
     uint32_t connection_pcc_total[NUM_OF_PCC];
+    // Setting up a handler for SIGINT. Will raise a flag if SIGINT was sent
+    struct sigaction sa = {.sa_handler = sigint_handler};
 
+    er = sigaction(SIGINT, &sa, NULL);
+    if(er < 0){
+        perror("Failed to initiate SIGINT handler");
+        exit(1);
+    }
 
     // Input validity check
     if (argc != 2){
         fprintf(stderr, "Invalid arguments\n");
         exit(1);
-    }
-
+    }    
     // Setting up the connection
     port = atoi(argv[1]);
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -215,48 +228,63 @@ int main(int argc, char *argv[]){
         fprintf(stderr, "Failed to allocate buffer for data transfer\n");
         exit(1);
     }
-    // Starting to accept and handle connections
+    served_clients = 0;
+
+    // ====== Starting to accept and handle connections ======
     while(1){
-        // Resetting current connection pcc counter and fail_flag
+        // Resetting current connection pcc counter and failed flag
         memset(connection_pcc_total, 0, sizeof(connection_pcc_total));
-        fail_flag = 0;
+        failed = 0;
 
         // Connecting
         connfd = accept(sockfd, (struct sockaddr *)&peer_addr, &addrsize);
-
         if(connfd < 0){
+            if(got_sigint){
+                break;
+            }
             perror("Failed to accept connection");
             exit(1);
         }
+
         // ====== Reading data ======
 
         // Reding the header to know the file size
         read_bytes = read_k_bytes(connfd, (char *)&N_buff, sizeof(N_buff));
-        if(read_bytes < 0){
-            // todo: handle this
-            if ((errno != ETIMEDOUT) && (errno != ECONNRESET) && (errno != EPIPE)){
+        if(read_bytes == 0){
+            fprintf(stderr, "The connection closed unexpectedly\n");
+            failed = 1;
+        }else if (read_bytes < 0){
+            if ((errno == ETIMEDOUT) || (errno == ECONNRESET) || (errno == EPIPE)){
                 fprintf(stderr, "%s\n", strerror(errno));
-
+                failed = 1;
+            }else{
+                fprintf(stderr, "%s\n", strerror(errno));
+                exit(1);
             }
         }
         // Reading the file stream
-        if (read_bytes == N){
+        if ((!failed) && (read_bytes == N)){
             file_size = ntohl(N_buff);
             
-            while (file_size> 0){
+            while (file_size > 0){
                 data_buffer_size = MIN(file_size, MAX_BUFF_SIZE);
                 read_bytes = read_k_bytes(connfd, data_buff, data_buffer_size);
                 
-                if(read_bytes <= 0){
-                        if(read_bytes < 0){
-                            // todo: handle this
-                            if ((errno != ETIMEDOUT) && (errno != ECONNRESET) && (errno != EPIPE)){
-                                fprintf(stderr, "%s\n", strerror(errno));
-
-                            }
-                    }
-                    fail_flag = 1;
+                if(read_bytes == 0){
+                    fprintf(stderr, "The connection closed unexpectedly\n");
+                    failed = 1;
+                    // As there won't be any more data to read
                     break;
+                }else if (read_bytes < 0){
+                    if ((errno == ETIMEDOUT) || (errno == ECONNRESET) || (errno == EPIPE)){
+                        fprintf(stderr, "%s\n", strerror(errno));
+                        failed = 1;
+                        // As there won't be any more data to read
+                        break;
+                    }else{
+                        fprintf(stderr, "%s\n", strerror(errno));
+                        exit(1);
+                    }
                 }
                 // Updating current connection pcc total
                 for (i = 0; i < read_bytes; i ++){
@@ -269,24 +297,32 @@ int main(int argc, char *argv[]){
             }            
         }
 
-
         // ====== Writing data ======
 
-        if(!fail_flag){
+        if(!failed){
             pcc_amount = num_of_pcc(connection_pcc_total);
             message = htonl(pcc_amount);
             written = write_k_bytes(connfd, (char *)&message, sizeof(message));
             if(written != (ssize_t)sizeof(message)){
-                if(written < 0){
-                    fprintf(stderr, "%s\n", strerror(errno));
-                }
-                fail_flag = 1;
-            } 
-        }
+                if(written == 0){
+                    fprintf(stderr, "The connection closed unexpectedly\n");
+                    failed = 1;
+                }else if (written < 0){
+                    if ((errno == ETIMEDOUT) || (errno == ECONNRESET) || (errno == EPIPE)){
+                        fprintf(stderr, "%s\n", strerror(errno));
+                        failed = 1;
+                    }else{
+                        fprintf(stderr, "%s\n", strerror(errno));
+                        exit(1);
+                    }
+                } 
+            }
+        }   
         
-
-        if(!fail_flag){
+        // Updating the totals in case of a successful connection
+        if(!failed){
             update_total(connection_pcc_total);
+            served_clients++;
         }
 
         er = close(connfd);
@@ -294,11 +330,17 @@ int main(int argc, char *argv[]){
             perror("Failed to close socket");
             exit(1);
         }
+
+        if(got_sigint){
+            // In case there was a SIGINT while processing the client, as the handler handled it,
+            // we finished processing the client and need to stop accepting new clients
+            break;
+        }
     }
-
-
-
-      
+    // ====== Finishing ======
+    print_pcc_total(pcc_total);
+    printf("Served %u client(s) successfully\n", served_clients); 
+    exit(0);
 }
 
     
